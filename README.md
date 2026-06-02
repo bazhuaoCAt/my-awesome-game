@@ -16,7 +16,7 @@
 
 ## 🚀 在线试玩
 
-[点击这里](https://github.com/bazhuaoCAt/my-awesome-game/blob/main/index.html) 开始游戏
+[点击这里](https://bazhuaocat.github.io/my-awesome-game/) 开始游戏
 
 
 ## 📝 说明
