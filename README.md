@@ -16,7 +16,7 @@
 
 ## 🚀 在线试玩
 
-[点击这里](file:///Users/mac/Downloads/my-awesome-game.html) 开始游戏
+[点击这里](https://github.com/bazhuaoCAt/my-awesome-game/blob/main/index.html) 开始游戏
 
 
 ## 📝 说明
