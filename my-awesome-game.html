@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Three.js 真实感碎屏射击系统</title>
+    
+    <!-- 核心库 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <style>
+        :root {
+            --primary: #00ffcc;
+            --secondary: #ff0055;
+            --bg-glass: rgba(10, 15, 20, 0.85);
+        }
+
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            color: white;
+            user-select: none;
+        }
+
+        /* 视频层：镜像翻转 */
+        .input_video {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+            z-index: 0;
+            filter: brightness(0.7) contrast(1.1); /* 略微压暗背景以突出特效 */
+        }
+
+        /* Three.js 层 */
+        #canvas-container {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 1;
+            pointer-events: none;
+        }
+
+        /* 准星系统 */
+        #crosshair {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            z-index: 2;
+            transition: opacity 0.2s;
+            display: none;
+        }
+        
+        /* 动态准星样式 */
+        .reticle {
+            width: 40px; height: 40px;
+            border: 2px solid var(--primary);
+            border-radius: 50%;
+            box-shadow: 0 0 10px var(--primary);
+            position: relative;
+            transition: all 0.1s;
+        }
+        .reticle::after {
+            content: ''; position: absolute;
+            top: 50%; left: 50%;
+            width: 4px; height: 4px;
+            background: #fff;
+            transform: translate(-50%, -50%);
+            border-radius: 50%;
+        }
+        /* 狙击枪准星 */
+        .reticle.sniper {
+            width: 100px; height: 100px;
+            border: 1px solid rgba(255,0,0,0.8);
+            border-radius: 0;
+        }
+        .reticle.sniper::before {
+            content: ''; position: absolute;
+            top: 50%; left: 0; width: 100%; height: 1px; background: rgba(255,0,0,0.8);
+        }
+        .reticle.sniper::after {
+            content: ''; position: absolute;
+            left: 50%; top: 0; width: 1px; height: 100%; background: rgba(255,0,0,0.8);
+            border-radius: 0;
+        }
+
+        /* UI 面板 */
+        #ui-panel {
+            position: absolute;
+            right: 20px; bottom: 20px;
+            width: 300px;
+            padding: 20px;
+            background: var(--bg-glass);
+            backdrop-filter: blur(15px);
+            border-left: 3px solid var(--primary);
+            border-radius: 8px;
+            z-index: 10;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            transition: transform 0.3s;
+        }
+
+        h2 { margin: 0 0 15px 0; font-size: 20px; letter-spacing: 2px; text-transform: uppercase; color: var(--primary); display: flex; justify-content: space-between; align-items: center; }
+        
+        .control-group { margin-bottom: 15px; }
+        label { display: block; font-size: 11px; color: #888; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 1px; }
+
+        select, input[type=range] {
+            width: 100%;
+            background: rgba(255,255,255,0.1);
+            border: 1px solid rgba(255,255,255,0.2);
+            color: white;
+            padding: 8px;
+            border-radius: 4px;
+            outline: none;
+            font-family: inherit;
+        }
+        select option { background: #000; }
+        select:focus { border-color: var(--primary); }
+
+        .btn-group { display: flex; gap: 10px; }
+        .btn {
+            flex: 1;
+            padding: 10px;
+            background: transparent;
+            border: 1px solid var(--primary);
+            color: var(--primary);
+            cursor: pointer;
+            text-transform: uppercase;
+            font-size: 12px;
+            font-weight: bold;
+            transition: 0.2s;
+        }
+        .btn:hover { background: var(--primary); color: #000; }
+        .btn.danger { border-color: var(--secondary); color: var(--secondary); }
+        .btn.danger:hover { background: var(--secondary); color: white; }
+
+        /* 全屏按钮 */
+        #fullscreen-toggle {
+            position: absolute; top: 20px; right: 20px;
+            background: rgba(0,0,0,0.5); border: 1px solid #555;
+            color: white; padding: 8px 12px; cursor: pointer; z-index: 20;
+        }
+
+        /* 状态提示 */
+        #status-bar {
+            position: absolute; top: 20px; left: 20px;
+            display: flex; gap: 10px; align-items: center;
+            z-index: 5;
+        }
+        .status-dot { width: 10px; height: 10px; border-radius: 50%; background: #333; transition: 0.3s; }
+        .status-dot.active { background: var(--secondary); box-shadow: 0 0 10px var(--secondary); }
+        .status-text { font-size: 14px; font-weight: bold; letter-spacing: 1px; text-shadow: 0 0 5px black; }
+
+        /* 加载页 */
+        #loader {
+            position: fixed; inset: 0; background: #000; z-index: 100;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+        }
+        .loader-spin {
+            width: 40px; height: 40px; border: 3px solid #333; border-top-color: var(--primary);
+            border-radius: 50%; animation: spin 1s infinite linear; margin-bottom: 20px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+    </style>
+</head>
+<body>
+
+    <!-- 加载层 -->
+    <div id="loader">
+        <div class="loader-spin"></div>
+        <div style="color:var(--primary); letter-spacing:2px;">LOADING WEAPON SYSTEMS...</div>
+    </div>
+
+    <!-- 顶部状态栏 -->
+    <div id="status-bar">
+        <div class="status-dot" id="hand-dot"></div>
+        <div class="status-text" id="status-msg">WAITING FOR HAND...</div>
+    </div>
+
+    <button id="fullscreen-toggle">⛶ FULLSCREEN</button>
+
+    <!-- 准星 -->
+    <div id="crosshair"><div class="reticle"></div></div>
+
+    <!-- 核心UI面板 -->
+    <div id="ui-panel">
+        <h2>ARSENAL <span style="font-size:12px; opacity:0.6;">V 1.0</span></h2>
+        
+        <div class="control-group">
+            <label>Select Weapon</label>
+            <select id="weapon-selector">
+                <option value="glock">Glock 17 (Pistol)</option>
+                <option value="deagle">Desert Eagle (Magnum)</option>
+                <option value="shotgun">Remington M870 (Shotgun)</option>
+                <option value="sniper">AWM (Sniper Rifle)</option>
+                <option value="ak47">AK-47 (Assault Rifle)</option>
+                <option value="uzi">Micro UZI (SMG)</option>
+                <option value="laser">Plasma Blaster (Sci-Fi)</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label>Sound Volume</label>
+            <input type="range" id="volume-slider" min="0" max="1" step="0.1" value="0.6">
+        </div>
+
+        <div class="btn-group">
+            <button class="btn danger" id="clear-holes">Repair Screen</button>
+            <button class="btn" id="toggle-ui">Hide UI</button>
+        </div>
+        
+        <div style="margin-top:15px; font-size:10px; color:#666; line-height:1.4; border-top:1px solid rgba(255,255,255,0.1); padding-top:10px;">
+            <strong style="color:var(--primary)">INSTRUCTIONS:</strong><br>
+            1. Make "L" Shape (Gun gesture).<br>
+            2. Aim with Index Finger.<br>
+            3. <b>Press Thumb Down</b> to Fire.
+        </div>
+    </div>
+
+    <!-- 视频与3D容器 -->
+    <video class="input_video" autoplay playsinline muted></video>
+    <div id="canvas-container"></div>
+
+<script>
+    /**
+     * 1. 枪械数据配置 (The Arsenal)
+     */
+    const WEAPONS = {
+        'glock':  { name: 'Glock 17', fireRate: 200, recoil: 5, spread: 0, count: 1, scale: 0.8, type: 'bullet' },
+        'deagle': { name: 'Desert Eagle', fireRate: 600, recoil: 15, spread: 0, count: 1, scale: 1.5, type: 'heavy' },
+        'shotgun':{ name: 'M870', fireRate: 1000, recoil: 25, spread: 40, count: 8, scale: 0.6, type: 'shatter' },
+        'sniper': { name: 'AWM', fireRate: 1500, recoil: 30, spread: 0, count: 1, scale: 2.0, type: 'pierce' },
+        'ak47':   { name: 'AK-47', fireRate: 100, recoil: 8, spread: 5, count: 1, scale: 0.9, type: 'bullet' },
+        'uzi':    { name: 'UZI', fireRate: 60, recoil: 3, spread: 15, count: 1, scale: 0.5, type: 'bullet' },
+        'laser':  { name: 'Plasma', fireRate: 300, recoil: 2, spread: 0, count: 1, scale: 1.2, type: 'energy' }
+    };
+
+    let currentWeapon = 'glock';
+    let lastFireTime = 0;
+    let masterVolume = 0.6;
+    let isHandDetected = false;
+
+    /**
+     * 2. 音频合成引擎 (Web Audio API)
+     * 避免加载外部MP3，使用振荡器合成不同枪声
+     */
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    const audioCtx = new AudioContext();
+
+    function playGunSound(type) {
+        if(audioCtx.state === 'suspended') audioCtx.resume();
+        const t = audioCtx.currentTime;
+        
+        // 噪音源 (爆炸感)
+        const bufferSize = audioCtx.sampleRate * 2; // 2s buffer
+        const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+
+        const noise = audioCtx.createBufferSource();
+        noise.buffer = buffer;
+        const noiseFilter = audioCtx.createBiquadFilter();
+        const noiseGain = audioCtx.createGain();
+
+        noise.connect(noiseFilter);
+        noiseFilter.connect(noiseGain);
+        noiseGain.connect(audioCtx.destination);
+
+        // 振荡器 (音调感)
+        const osc = audioCtx.createOscillator();
+        const oscGain = audioCtx.createGain();
+        osc.connect(oscGain);
+        oscGain.connect(audioCtx.destination);
+
+        // 默认增益
+        noiseGain.gain.setValueAtTime(masterVolume, t);
+        oscGain.gain.setValueAtTime(masterVolume * 0.5, t);
+
+        switch(type) {
+            case 'glock': // 短促，高频
+                noiseFilter.type = 'lowpass';
+                noiseFilter.frequency.value = 1000;
+                noiseGain.gain.exponentialRampToValueAtTime(0.01, t + 0.15);
+                osc.frequency.setValueAtTime(150, t);
+                oscGain.gain.setValueAtTime(0, t); // 主要是噪音
+                break;
+            case 'deagle': // 响亮，低沉
+                noiseFilter.frequency.value = 800;
+                noiseGain.gain.setValueAtTime(masterVolume * 1.5, t);
+                noiseGain.gain.exponentialRampToValueAtTime(0.01, t + 0.5);
+                osc.type = 'square';
+                osc.frequency.setValueAtTime(100, t);
+                osc.frequency.exponentialRampToValueAtTime(10, t + 0.3);
+                oscGain.gain.exponentialRampToValueAtTime(0.01, t + 0.3);
+                break;
+            case 'shotgun': // 极重低音，扩散感
+                noiseFilter.frequency.value = 500;
+                noiseGain.gain.setValueAtTime(masterVolume * 1.2, t);
+                noiseGain.gain.exponentialRampToValueAtTime(0.01, t + 0.6);
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(60, t);
+                osc.frequency.linearRampToValueAtTime(20, t + 0.4);
+                break;
+            case 'sniper': // 极响，回声感 (通过长衰减模拟)
+                noiseFilter.frequency.value = 1200;
+                noiseGain.gain.setValueAtTime(masterVolume * 2.0, t);
+                noiseGain.gain.exponentialRampToValueAtTime(0.01, t + 1.0);
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(200, t);
+                osc.frequency.exponentialRampToValueAtTime(10, t + 0.5);
+                break;
+            case 'uzi': // 极短
+                noiseFilter.frequency.value = 1500;
+                noiseGain.gain.exponentialRampToValueAtTime(0.01, t + 0.08);
+                break;
+            case 'laser': // 纯振荡器，科幻
+                noiseGain.gain.setValueAtTime(0, t);
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(800, t);
+                osc.frequency.exponentialRampToValueAtTime(100, t + 0.3);
+                oscGain.gain.setValueAtTime(masterVolume * 0.8, t);
+                oscGain.gain.exponentialRampToValueAtTime(0.01, t + 0.3);
+                break;
+            default: // AK47
+                noiseFilter.frequency.value = 1000;
+                noiseGain.gain.exponentialRampToValueAtTime(0.01, t + 0.2);
+        }
+
+        noise.start(t);
+        noise.stop(t + 1.5);
+        if(type !== 'glock' && type !== 'ak47' && type !== 'uzi') {
+            osc.start(t);
+            osc.stop(t + 1.5);
+        }
+    }
+
+    /**
+     * 3. 视觉引擎 (Three.js & Canvas Textures)
+     */
+    const scene = new THREE.Scene();
+    const camera = new THREE.OrthographicCamera(-window.innerWidth/2, window.innerWidth/2, window.innerHeight/2, -window.innerHeight/2, 1, 1000);
+    camera.position.z = 10;
+    
+    const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+    // 程序化生成碎玻璃纹理
+    function createImpactTexture(type) {
+        const size = 256;
+        const cvs = document.createElement('canvas');
+        cvs.width = size; cvs.height = size;
+        const ctx = cvs.getContext('2d');
+        const cx = size/2, cy = size/2;
+
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+
+        // 基础弹孔
+        if(type === 'energy') {
+            // 激光灼烧
+            const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, 40);
+            g.addColorStop(0, '#fff');
+            g.addColorStop(0.3, '#0ff');
+            g.addColorStop(1, 'rgba(0,0,255,0)');
+            ctx.fillStyle = g;
+            ctx.beginPath(); ctx.arc(cx, cy, 40, 0, Math.PI*2); ctx.fill();
+        } else {
+            // 物理撞击中心
+            ctx.fillStyle = 'rgba(10,10,10,0.95)';
+            ctx.beginPath(); ctx.arc(cx, cy, 8, 0, Math.PI*2); ctx.fill();
+            
+            // 裂纹绘制
+            ctx.strokeStyle = type === 'shatter' ? 'rgba(200,220,255,0.7)' : 'rgba(255,255,255,0.8)';
+            ctx.lineWidth = type === 'heavy' ? 3 : 1.5;
+            
+            const numCracks = type === 'heavy' || type === 'shatter' ? 12 : 6;
+            
+            for(let i=0; i<numCracks; i++) {
+                ctx.beginPath();
+                ctx.moveTo(cx, cy);
+                const angle = (Math.PI*2/numCracks) * i + (Math.random()*0.5);
+                const len = 40 + Math.random() * 60;
+                
+                // 锯齿状裂纹
+                let currX = cx, currY = cy;
+                let r = 0;
+                while(r < len) {
+                    r += 10 + Math.random()*10;
+                    const jitter = (Math.random()-0.5) * 10;
+                    currX = cx + Math.cos(angle)*r + Math.sin(angle)*jitter;
+                    currY = cy + Math.sin(angle)*r + Math.cos(angle)*jitter;
+                    ctx.lineTo(currX, currY);
+                }
+                ctx.stroke();
+                
+                // 蛛网连接线
+                if(Math.random() > 0.4) {
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, r*0.6, angle - 0.3, angle + 0.3);
+                    ctx.stroke();
+                }
+            }
+        }
+
+        return new THREE.CanvasTexture(cvs);
+    }
+
+    // 预生成纹理缓存
+    const textures = {
+        bullet: createImpactTexture('bullet'),
+        heavy: createImpactTexture('heavy'),
+        shatter: createImpactTexture('shatter'),
+        pierce: createImpactTexture('heavy'), // 复用 heavy
+        energy: createImpactTexture('energy')
+    };
+
+    // 粒子系统 (火花)
+    const particleGeo = new THREE.BufferGeometry();
+    const pCount = 200;
+    const pPos = new Float32Array(pCount * 3);
+    const pVel = new Float32Array(pCount * 3);
+    const pLife = new Float32Array(pCount);
+    particleGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
+    
+    const pMat = new THREE.PointsMaterial({
+        color: 0xffaa44, size: 4, transparent: true, blending: THREE.AdditiveBlending
+    });
+    const sparks = new THREE.Points(particleGeo, pMat);
+    scene.add(sparks);
+
+    // 隐藏粒子
+    for(let i=0; i<pCount; i++) pPos[i*3] = 9999;
+
+    function spawnSparks(x, y, count = 20) {
+        let spawned = 0;
+        for(let i=0; i<pCount; i++) {
+            if(pLife[i] <= 0 && spawned < count) {
+                pPos[i*3] = x; pPos[i*3+1] = y; pPos[i*3+2] = 0;
+                const angle = Math.random() * Math.PI * 2;
+                const speed = Math.random() * 15 + 5;
+                pVel[i*3] = Math.cos(angle) * speed;
+                pVel[i*3+1] = Math.sin(angle) * speed;
+                pLife[i] = 1.0;
+                spawned++;
+            }
+        }
+        sparks.geometry.attributes.position.needsUpdate = true;
+    }
+
+    function addBulletHole(x, y, scale, textureKey) {
+        const mat = new THREE.SpriteMaterial({ map: textures[textureKey], rotation: Math.random()*Math.PI });
+        const sprite = new THREE.Sprite(mat);
+        const s = 100 * scale;
+        sprite.scale.set(s, s, 1);
+        sprite.position.set(x, y, 0);
+        scene.add(sprite);
+    }
+
+    // 摄像机震动逻辑
+    let shakeIntensity = 0;
+    function applyRecoil(amount) {
+        shakeIntensity = amount;
+    }
+
+    /**
+     * 4. 交互核心 (MediaPipe Hands)
+     */
+    const videoElem = document.querySelector('.input_video');
+    const crosshair = document.getElementById('crosshair');
+    const reticle = document.querySelector('.reticle');
+    const statusDot = document.getElementById('hand-dot');
+    const statusMsg = document.getElementById('status-msg');
+
+    // 光标平滑处理
+    let targetX = 0, targetY = 0;
+    let curX = 0, curY = 0;
+
+    function onResults(results) {
+        document.getElementById('loader').style.display = 'none';
+
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+            isHandDetected = true;
+            statusDot.classList.add('active');
+            statusMsg.innerText = "SYSTEM ACTIVE - AIM & FIRE";
+            statusMsg.style.color = "var(--primary)";
+
+            const landmarks = results.multiHandLandmarks[0];
+            
+            // 关键点: 0-手腕, 5-食指根, 8-食指尖, 4-拇指尖
+            const indexTip = landmarks[8];
+            const thumbTip = landmarks[4];
+            const indexMCP = landmarks[5];
+
+            // 1. 准星定位 (镜像处理)
+            // 屏幕坐标 (0-1) -> CSS 像素
+            const rawX = (1 - indexTip.x) * window.innerWidth;
+            const rawY = indexTip.y * window.innerHeight;
+
+            // 平滑插值
+            targetX = rawX; targetY = rawY;
+            
+            // 2. 触发检测 (拇指下压)
+            // 计算 拇指尖(4) 到 食指根(5) 的距离
+            // 距离小 = 扣下扳机; 距离大 = 准备
+            const dist = Math.hypot(thumbTip.x - indexMCP.x, thumbTip.y - indexMCP.y);
+            const triggerThreshold = 0.06; // 阈值
+
+            const now = Date.now();
+            const gun = WEAPONS[currentWeapon];
+
+            // 射击逻辑
+            if (dist < triggerThreshold) {
+                if (now - lastFireTime > gun.fireRate) {
+                    fireWeapon(gun, curX, curY);
+                    lastFireTime = now;
+                    // UI 反馈：准星红色闪烁
+                    reticle.style.borderColor = "#ff0000";
+                    setTimeout(() => reticle.style.borderColor = "", 100);
+                }
+            }
+            
+            crosshair.style.display = 'block';
+
+        } else {
+            isHandDetected = false;
+            statusDot.classList.remove('active');
+            statusMsg.innerText = "NO TARGET DETECTED";
+            statusMsg.style.color = "#666";
+            crosshair.style.display = 'none';
+        }
+    }
+
+    function fireWeapon(gun, uiX, uiY) {
+        // 1. 播放声音
+        playGunSound(currentWeapon);
+
+        // 2. 计算 3D 坐标
+        // UI (左上角原点) -> Three.js (中心原点)
+        const threeX = uiX - window.innerWidth / 2;
+        const threeY = -(uiY - window.innerHeight / 2);
+
+        // 3. 生成弹孔
+        for(let i=0; i<gun.count; i++) {
+            // 散射计算
+            const offsetX = (Math.random() - 0.5) * gun.spread * 10;
+            const offsetY = (Math.random() - 0.5) * gun.spread * 10;
+            addBulletHole(threeX + offsetX, threeY + offsetY, gun.scale, gun.type);
+            spawnSparks(threeX + offsetX, threeY + offsetY, 10);
+        }
+
+        // 4. 后坐力 (屏幕震动)
+        applyRecoil(gun.recoil);
+    }
+
+    // 初始化 MediaPipe
+    const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+    hands.setOptions({
+        maxNumHands: 1,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.6,
+        minTrackingConfidence: 0.6
+    });
+    hands.onResults(onResults);
+
+    const cameraUtils = new Camera(videoElem, {
+        onFrame: async () => { await hands.send({image: videoElem}); },
+        width: 1280, height: 720
+    });
+    cameraUtils.start();
+
+    /**
+     * 5. 主循环 (动画与渲染)
+     */
+    function animate() {
+        requestAnimationFrame(animate);
+
+        // 平滑移动准星
+        // 狙击枪移动慢一些(模拟重量)
+        const lerpFactor = currentWeapon === 'sniper' ? 0.05 : 0.2;
+        curX += (targetX - curX) * lerpFactor;
+        curY += (targetY - curY) * lerpFactor;
+        crosshair.style.left = `${curX}px`;
+        crosshair.style.top = `${curY}px`;
+
+        // 更新震动
+        if(shakeIntensity > 0) {
+            camera.position.x = (Math.random()-0.5) * shakeIntensity;
+            camera.position.y = (Math.random()-0.5) * shakeIntensity;
+            shakeIntensity *= 0.9; // 衰减
+            if(shakeIntensity < 0.5) {
+                shakeIntensity = 0;
+                camera.position.set(0,0,10);
+            }
+        }
+
+        // 更新粒子
+        const pp = sparks.geometry.attributes.position.array;
+        let needsUpdate = false;
+        for(let i=0; i<pCount; i++) {
+            if(pLife[i] > 0) {
+                pp[i*3] += pVel[i*3];
+                pp[i*3+1] += pVel[i*3+1];
+                // 重力
+                pVel[i*3+1] -= 0.5;
+                pLife[i] -= 0.05;
+                needsUpdate = true;
+            } else {
+                pp[i*3] = 9999;
+            }
+        }
+        if(needsUpdate) sparks.geometry.attributes.position.needsUpdate = true;
+
+        renderer.render(scene, camera);
+    }
+    animate();
+
+    /**
+     * 6. UI 事件绑定
+     */
+    // 武器切换
+    const weaponSelector = document.getElementById('weapon-selector');
+    weaponSelector.addEventListener('change', (e) => {
+        currentWeapon = e.target.value;
+        // 更新准星样式
+        if(currentWeapon === 'sniper') reticle.classList.add('sniper');
+        else reticle.classList.remove('sniper');
+    });
+
+    // 音量
+    document.getElementById('volume-slider').addEventListener('input', (e) => {
+        masterVolume = parseFloat(e.target.value);
+    });
+
+    // 清屏
+    document.getElementById('clear-holes').addEventListener('click', () => {
+        // 移除所有 Sprite, 保留 Points
+        const toRemove = [];
+        scene.traverse((child) => {
+            if(child.isSprite) toRemove.push(child);
+        });
+        toRemove.forEach(child => scene.remove(child));
+    });
+
+    // 隐藏UI
+    document.getElementById('toggle-ui').addEventListener('click', () => {
+        const panel = document.getElementById('ui-panel');
+        panel.style.transform = panel.style.transform === 'translateY(150%)' ? 'translateY(0)' : 'translateY(150%)';
+    });
+
+    // 全屏
+    document.getElementById('fullscreen-toggle').addEventListener('click', () => {
+        if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+        else if (document.exitFullscreen) document.exitFullscreen();
+    });
+
+    // 窗口自适应
+    window.addEventListener('resize', () => {
+        camera.left = -window.innerWidth/2; camera.right = window.innerWidth/2;
+        camera.top = window.innerHeight/2; camera.bottom = -window.innerHeight/2;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+</script>
+</body>
+</html>
